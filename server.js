@@ -528,7 +528,7 @@ function getStatusMessage(status) {
 // ============================================
 // START SERVER
 // ============================================
-const PORT = process.env.SCANNER_PORT || 4000;
+const PORT = process.env.PORT || process.env.SCANNER_PORT || 4000;
 
 async function startServer() {
     try {
