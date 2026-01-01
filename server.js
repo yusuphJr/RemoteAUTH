@@ -375,7 +375,7 @@ app.post('/api/auth/start', async (req, res) => {
         });
     }
 });
-});
+
 
 // Get QR Code for Client
 app.get('/api/qr/:clientId', (req, res) => {
