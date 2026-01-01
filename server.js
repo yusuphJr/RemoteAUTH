@@ -348,6 +348,13 @@ app.get('/api/health', (req, res) => {
 
 // Start New Authentication Session
 app.post('/api/auth/start', async (req, res) => {
+    // Destroy any existing clients to prevent Puppeteer crashes
+    for (const [clientId, clientState] of activeClients.entries()) {
+        console.log(`🧹 Destroying previous client: ${clientId}`);
+        await clientState.client.destroy();
+        activeClients.delete(clientId);
+    }
+
     try {
         // Generate unique client ID for this auth session
         const clientId = `auth_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -367,6 +374,7 @@ app.post('/api/auth/start', async (req, res) => {
             error: error.message
         });
     }
+});
 });
 
 // Get QR Code for Client
