@@ -60,12 +60,21 @@
             background: #ef4444;
         }
 
-        .status-badge.qr_ready {
+        .status-badge.initializing {
             background: #f59e0b;
             animation: pulse 2s infinite;
         }
 
+        .status-badge.qr_ready {
+            background: #10b981;
+            animation: pulse 2s infinite;
+        }
+
         .status-badge.authenticated {
+            background: #10b981;
+        }
+
+        .status-badge.ready {
             background: #10b981;
         }
 
@@ -115,16 +124,15 @@
         }
 
         .qr-frame img {
-            width: 100%;
-            height: 100%;
+            width: 280px;
+            height: 280px;
             object-fit: contain;
-            padding: 15px;
         }
 
         .qr-placeholder {
             font-size: 80px;
-            opacity: 0.3;
             text-align: center;
+            color: #667eea;
         }
 
         .qr-placeholder p {
@@ -288,13 +296,34 @@
         }
 
         .hidden {
-            display: none;
+            display: none !important;
         }
 
         .loading {
             text-align: center;
             color: #666;
             font-size: 14px;
+        }
+
+        .debug-log {
+            background: #1f2937;
+            color: #10b981;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .debug-log.show {
+            display: block;
+        }
+
+        .debug-log p {
+            margin: 2px 0;
         }
     </style>
 </head>
@@ -318,7 +347,7 @@
                         📱
                         <p>Click Start to begin</p>
                     </div>
-                    <img id="qr-image" style="display:none;" alt="QR Code">
+                    <img id="qr-image" class="hidden" alt="QR Code">
                 </div>
 
                 <div class="info-box">
@@ -364,6 +393,11 @@
                 </ol>
             </div>
 
+            <!-- Debug Log -->
+            <div class="debug-log" id="debug-log">
+                <p><strong>Debug Log:</strong></p>
+            </div>
+
             <div class="success-message" id="success-msg"></div>
             <div class="error-message" id="error-msg"></div>
         </div>
@@ -374,10 +408,25 @@
         let statusInterval = null;
         let qrInterval = null;
         let currentClientId = null;
+        let isPolling = false;
+
+        // Debug logging
+        function debugLog(message) {
+            console.log(message);
+            const debugDiv = document.getElementById('debug-log');
+            if (debugDiv) {
+                const p = document.createElement('p');
+                p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+                debugDiv.appendChild(p);
+                debugDiv.scrollTop = debugDiv.scrollHeight;
+                debugDiv.classList.add('show');
+            }
+        }
 
         // Start Authentication
         async function startAuth() {
             try {
+                debugLog('🚀 Starting authentication...');
                 showInfo('Starting authentication...');
                 document.getElementById('start-btn').disabled = true;
                 
@@ -386,19 +435,28 @@
                     headers: { 'Content-Type': 'application/json' }
                 });
                 
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+                
                 const data = await response.json();
+                debugLog(`Response: ${JSON.stringify(data)}`);
                 
                 if (data.success) {
                     currentClientId = data.clientId;
-                    console.log('✅ Client ID:', currentClientId);
+                    debugLog(`✅ Client ID received: ${currentClientId}`);
                     showSuccess('Authentication started! Waiting for QR code...');
                     document.getElementById('refresh-btn').classList.remove('hidden');
+                    
+                    // Show placeholder with loading state
+                    showQRPlaceholder('⏳', 'Generating QR code...');
+                    
                     startPolling();
                 } else {
-                    showError(data.message);
-                    document.getElementById('start-btn').disabled = false;
+                    throw new Error(data.message || 'Failed to start authentication');
                 }
             } catch (error) {
+                debugLog(`❌ Error: ${error.message}`);
                 showError('Failed to start authentication: ' + error.message);
                 document.getElementById('start-btn').disabled = false;
             }
@@ -406,6 +464,7 @@
 
         // Refresh QR
         async function refreshQR() {
+            debugLog('🔄 Refreshing QR code...');
             showInfo('Refreshing QR code...');
             loadQR();
         }
@@ -417,6 +476,7 @@
             }
 
             try {
+                debugLog('🔄 Resetting session...');
                 const response = await fetch(`${API_URL}/auth/reset`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
@@ -426,12 +486,14 @@
                 
                 if (data.success) {
                     showSuccess('Session reset successfully!');
+                    debugLog('✅ Reset successful');
                     resetUI();
                     stopPolling();
                 } else {
-                    showError(data.message);
+                    throw new Error(data.message || 'Reset failed');
                 }
             } catch (error) {
+                debugLog(`❌ Reset error: ${error.message}`);
                 showError('Failed to reset: ' + error.message);
             }
         }
@@ -439,33 +501,55 @@
         // Load QR Code
         async function loadQR() {
             if (!currentClientId) {
-                console.log('⏳ No client ID yet');
+                debugLog('⏳ No client ID yet, skipping QR load');
                 return;
             }
 
             try {
+                debugLog(`📡 Fetching QR for client: ${currentClientId}`);
                 const response = await fetch(`${API_URL}/qr/${currentClientId}`);
-                const data = await response.json();
                 
-                const qrImage = document.getElementById('qr-image');
-                const qrPlaceholder = document.getElementById('qr-placeholder');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                debugLog(`QR Response: success=${data.success}, status=${data.status}`);
                 
                 if (data.success && data.qrImage) {
-                    console.log('✅ QR code received');
-                    qrImage.src = data.qrImage;
-                    qrImage.style.display = 'block';
-                    qrPlaceholder.style.display = 'none';
+                    debugLog('✅ QR code received, displaying...');
+                    showQRImage(data.qrImage);
                     showInfo('✅ QR code ready! Scan with WhatsApp');
                 } else {
-                    console.log('⏳ Waiting for QR:', data.message);
-                    qrImage.style.display = 'none';
-                    qrPlaceholder.style.display = 'block';
-                    qrPlaceholder.innerHTML = '⏳<p>' + (data.message || 'Generating QR code...') + '</p>';
+                    debugLog(`⏳ QR not ready: ${data.message || data.status}`);
+                    showQRPlaceholder('⏳', data.message || 'Generating QR code...');
                 }
             } catch (error) {
-                console.error('❌ Failed to load QR:', error);
-                showError('Failed to load QR code. Is the server running?');
+                debugLog(`❌ QR load error: ${error.message}`);
+                showError('Failed to load QR code: ' + error.message);
             }
+        }
+
+        // Show QR Image
+        function showQRImage(qrDataUrl) {
+            const qrImage = document.getElementById('qr-image');
+            const qrPlaceholder = document.getElementById('qr-placeholder');
+            
+            qrImage.src = qrDataUrl;
+            qrImage.classList.remove('hidden');
+            qrPlaceholder.classList.add('hidden');
+            
+            debugLog('✅ QR image displayed');
+        }
+
+        // Show QR Placeholder
+        function showQRPlaceholder(emoji, text) {
+            const qrImage = document.getElementById('qr-image');
+            const qrPlaceholder = document.getElementById('qr-placeholder');
+            
+            qrImage.classList.add('hidden');
+            qrPlaceholder.classList.remove('hidden');
+            qrPlaceholder.innerHTML = `${emoji}<p>${text}</p>`;
         }
 
         // Check Status
@@ -476,13 +560,18 @@
 
             try {
                 const response = await fetch(`${API_URL}/status/${currentClientId}`);
-                const data = await response.json();
                 
-                console.log('📊 Status:', data.status);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                debugLog(`📊 Status: ${data.status}`);
                 updateStatusBadge(data.status);
                 
                 // Session saved successfully
                 if (data.status === 'session_saved') {
+                    debugLog('✅ Session saved successfully!');
                     showSuccess('✅ Session saved! Check your WhatsApp inbox for Session ID!');
                     stopPolling();
                     
@@ -498,18 +587,24 @@
                     document.getElementById('start-btn').disabled = false;
                     document.getElementById('refresh-btn').classList.add('hidden');
                     
-                    // Hide QR
-                    document.getElementById('qr-image').style.display = 'none';
-                    document.getElementById('qr-placeholder').style.display = 'block';
-                    document.getElementById('qr-placeholder').innerHTML = '✅<p>Authentication Complete!<br>Check WhatsApp for Session ID</p>';
-                    
+                    // Show success placeholder
+                    showQRPlaceholder('✅', 'Authentication Complete!<br>Check WhatsApp for Session ID');
                     showInfo('📱 Session ID sent to your WhatsApp! Copy it to deploy your bot.');
                     
                     // Clear client ID
                     currentClientId = null;
                 }
+                
+                // Handle errors
+                if (data.status === 'auth_failed' || data.status === 'error') {
+                    debugLog('❌ Authentication failed');
+                    stopPolling();
+                    showError('Authentication failed. Please try again.');
+                    document.getElementById('start-btn').disabled = false;
+                    currentClientId = null;
+                }
             } catch (error) {
-                console.error('❌ Status check failed:', error);
+                debugLog(`❌ Status check error: ${error.message}`);
             }
         }
 
@@ -520,11 +615,13 @@
             
             const statusText = {
                 'disconnected': 'Disconnected',
-                'qr_ready': '⏳ Scan QR Code',
+                'initializing': '⏳ Initializing...',
+                'qr_ready': '📱 Scan QR Code',
                 'authenticated': '🔐 Authenticated',
                 'ready': '💾 Saving...',
                 'session_saved': '✅ Session Saved',
-                'auth_failed': '❌ Auth Failed'
+                'auth_failed': '❌ Auth Failed',
+                'error': '❌ Error'
             };
             
             badge.textContent = statusText[status] || status;
@@ -532,15 +629,27 @@
 
         // Start Polling
         function startPolling() {
-            console.log('🔄 Starting polling...');
-            // Poll QR more frequently at first
+            if (isPolling) {
+                debugLog('⚠️ Already polling, skipping...');
+                return;
+            }
+            
+            isPolling = true;
+            debugLog('🔄 Starting polling (every 2s)...');
+            
+            // Immediate first load
+            setTimeout(loadQR, 1000);
+            
+            // Then poll regularly
             qrInterval = setInterval(loadQR, 2000);
             statusInterval = setInterval(checkStatus, 2000);
         }
 
         // Stop Polling
         function stopPolling() {
-            console.log('🛑 Stopping polling');
+            isPolling = false;
+            debugLog('🛑 Stopping polling');
+            
             if (qrInterval) {
                 clearInterval(qrInterval);
                 qrInterval = null;
@@ -553,18 +662,17 @@
 
         // Reset UI
         function resetUI() {
-            document.getElementById('qr-image').style.display = 'none';
-            document.getElementById('qr-placeholder').style.display = 'block';
-            document.getElementById('qr-placeholder').innerHTML = '📱<p>Click Start to begin</p>';
+            showQRPlaceholder('📱', 'Click Start to begin');
             document.getElementById('start-btn').disabled = false;
             document.getElementById('refresh-btn').classList.add('hidden');
             document.getElementById('session-info').classList.remove('show');
             showInfo('Click "Start Authentication" to begin');
+            currentClientId = null;
         }
 
         // UI Helpers
         function showSuccess(msg) {
-            console.log('✅', msg);
+            debugLog(`✅ ${msg}`);
             const el = document.getElementById('success-msg');
             el.textContent = msg;
             el.classList.add('show');
@@ -572,7 +680,7 @@
         }
 
         function showError(msg) {
-            console.error('❌', msg);
+            debugLog(`❌ ${msg}`);
             const el = document.getElementById('error-msg');
             el.textContent = msg;
             el.classList.add('show');
@@ -580,15 +688,24 @@
         }
 
         function showInfo(msg) {
-            console.log('ℹ️', msg);
+            debugLog(`ℹ️ ${msg}`);
             document.getElementById('qr-info').textContent = msg;
         }
 
         // Initialize on page load
-        console.log('🚀 Initializing Multi-Tenant Scanner Service...');
+        debugLog('🚀 Page loaded - Multi-Tenant Scanner Service ready');
+        debugLog(`API URL: ${API_URL}`);
         
-        // Don't auto-check status since we don't have a client ID yet
-        // Users must click "Start Authentication" first
+        // Test server connectivity
+        fetch(`${API_URL}/health`)
+            .then(res => res.json())
+            .then(data => {
+                debugLog(`✅ Server connection OK: ${JSON.stringify(data)}`);
+            })
+            .catch(err => {
+                debugLog(`❌ Server connection failed: ${err.message}`);
+                showError('Cannot connect to server. Please check if backend is running.');
+            });
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
