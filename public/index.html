@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Service 1: WhatsApp Scanner</title>
+    <title>WhatsApp Scanner Service</title>
     <style>
         * {
             margin: 0;
@@ -56,35 +56,14 @@
             font-weight: 600;
         }
 
-        .status-badge.disconnected {
-            background: #ef4444;
-        }
-
-        .status-badge.initializing {
-            background: #f59e0b;
-            animation: pulse 2s infinite;
-        }
-
-        .status-badge.qr_ready {
-            background: #10b981;
-        }
-
-        .status-badge.authenticated {
-            background: #10b981;
-        }
-
-        .status-badge.ready {
-            background: #10b981;
-        }
-
-        .status-badge.session_saved {
-            background: #10b981;
-        }
-
-        .status-badge.auth_failed,
-        .status-badge.error {
-            background: #ef4444;
-        }
+        .status-badge.disconnected { background: #6b7280; }
+        .status-badge.initializing { background: #f59e0b; animation: pulse 2s infinite; }
+        .status-badge.qr_ready { background: #10b981; }
+        .status-badge.authenticated { background: #10b981; }
+        .status-badge.ready { background: #10b981; }
+        .status-badge.session_saved { background: #10b981; }
+        .status-badge.auth_failed { background: #ef4444; }
+        .status-badge.error { background: #ef4444; }
 
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -95,18 +74,11 @@
             padding: 40px 30px;
         }
 
-        .section {
-            margin-bottom: 30px;
-        }
-
         .section-title {
             font-size: 18px;
             font-weight: 600;
             color: #333;
             margin-bottom: 15px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
         }
 
         .qr-frame {
@@ -119,7 +91,6 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            position: relative;
             overflow: hidden;
         }
 
@@ -164,7 +135,7 @@
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: all 0.2s;
             width: 100%;
             margin-bottom: 10px;
         }
@@ -174,54 +145,26 @@
             box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
         }
 
-        .btn:active:not(:disabled) {
-            transform: translateY(0);
-        }
-
         .btn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
-        }
-
-        .btn-secondary {
-            background: #6b7280;
         }
 
         .btn-danger {
             background: #ef4444;
         }
 
-        .success-message {
+        .message {
             display: none;
-            background: #10b981;
-            color: white;
             padding: 15px;
             border-radius: 10px;
             margin-top: 20px;
-            text-align: center;
-            font-weight: 600;
             animation: slideIn 0.3s;
         }
 
-        .success-message.show {
-            display: block;
-        }
-
-        .error-message {
-            display: none;
-            background: #ef4444;
-            color: white;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 20px;
-            text-align: left;
-            line-height: 1.6;
-            animation: slideIn 0.3s;
-        }
-
-        .error-message.show {
-            display: block;
-        }
+        .message.show { display: block; }
+        .message.success { background: #10b981; color: white; }
+        .message.error { background: #ef4444; color: white; }
 
         @keyframes slideIn {
             from {
@@ -264,9 +207,7 @@
             display: none;
         }
 
-        .session-info.show {
-            display: block;
-        }
+        .session-info.show { display: block; }
 
         .session-info h3 {
             color: #065f46;
@@ -280,79 +221,65 @@
             margin: 4px 0;
         }
 
-        .hidden {
-            display: none !important;
-        }
+        .hidden { display: none !important; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔐 Service 1: Scanner</h1>
-            <p>WhatsApp Authentication Portal</p>
+            <h1>🔐 WhatsApp Scanner</h1>
+            <p>Authentication Service</p>
             <span id="status-badge" class="status-badge disconnected">Disconnected</span>
         </div>
 
         <div class="content">
-            <!-- QR Code Section -->
-            <div class="section" id="qr-section">
-                <div class="section-title">
-                    📱 QR Code Scanner
+            <div class="section-title">📱 QR Code Scanner</div>
+            
+            <div class="qr-frame">
+                <div class="qr-placeholder" id="qr-placeholder">
+                    📱
+                    <p>Click Start to begin</p>
                 </div>
-                
-                <div class="qr-frame" id="qr-frame">
-                    <div class="qr-placeholder" id="qr-placeholder">
-                        📱
-                        <p>Click Start to begin</p>
-                    </div>
-                    <img id="qr-image" class="hidden" alt="QR Code">
-                </div>
-
-                <div class="info-box">
-                    <p id="qr-info">Click "Start Authentication" to begin</p>
-                </div>
-
-                <button class="btn" onclick="startAuth()" id="start-btn">
-                    🚀 Start Authentication
-                </button>
-
-                <button class="btn btn-secondary hidden" onclick="refreshQR()" id="refresh-btn">
-                    🔄 Refresh QR Code
-                </button>
-
-                <button class="btn btn-danger" onclick="resetAuth()" id="reset-btn">
-                    🔄 Reset Session
-                </button>
+                <img id="qr-image" class="hidden" alt="QR Code">
             </div>
 
-            <!-- Session Info -->
+            <div class="info-box">
+                <p id="qr-info">Ready to authenticate. Click the button below to start.</p>
+            </div>
+
+            <button class="btn" onclick="startAuth()" id="start-btn">
+                🚀 Start Authentication
+            </button>
+
+            <button class="btn btn-danger" onclick="resetAuth()" id="reset-btn">
+                🔄 Reset Session
+            </button>
+
             <div class="session-info" id="session-info">
                 <h3>✅ Session Created Successfully!</h3>
                 <p><strong>Session ID:</strong> <span id="session-id">-</span></p>
                 <p><strong>Phone:</strong> <span id="session-phone">-</span></p>
-                <p><strong>Status:</strong> Saved to MongoDB</p>
                 <p style="margin-top: 10px; font-weight: 600;">
-                    ✨ You can now start Service 2 (Runtime) to use the bot!
+                    ✨ Check your WhatsApp for the full Session ID message!
                 </p>
             </div>
 
-            <!-- Instructions -->
             <div class="instructions">
-                <h3>📋 How to Authenticate</h3>
+                <h3>📋 How to Use</h3>
                 <ol>
-                    <li>Click "Start Authentication" button above</li>
-                    <li>Wait for QR code to appear (10-20 seconds)</li>
+                    <li>Click "Start Authentication"</li>
+                    <li>Wait 10-20 seconds for QR code</li>
                     <li>Open WhatsApp on your phone</li>
                     <li>Go to Settings → Linked Devices</li>
                     <li>Tap "Link a Device"</li>
-                    <li>Scan the QR code shown above</li>
-                    <li>Wait for "Session saved successfully"</li>
-                    <li>Check WhatsApp for your Session ID message</li>
+                    <li>Scan the QR code above</li>
+                    <li>Wait for success message</li>
+                    <li>Check WhatsApp for Session ID</li>
                 </ol>
             </div>
 
-            <div class="success-message" id="success-msg"></div>
-            <div class="error-message" id="error-msg"></div>
+            <div class="message success" id="success-msg"></div>
+            <div class="message error" id="error-msg"></div>
         </div>
     </div>
 
@@ -360,18 +287,14 @@
         const API_URL = '/api';
         let statusInterval = null;
         let qrInterval = null;
-        let currentClientId = null;
-        let isPolling = false;
-        let qrAttempts = 0;
-        const MAX_QR_ATTEMPTS = 30; // 30 attempts = 60 seconds
+        let attemptCount = 0;
+        const MAX_ATTEMPTS = 40; // 80 seconds total
 
-        // Start Authentication
         async function startAuth() {
             try {
-                console.log('🚀 Starting authentication...');
                 showInfo('Starting authentication...');
                 document.getElementById('start-btn').disabled = true;
-                qrAttempts = 0;
+                attemptCount = 0;
                 
                 const response = await fetch(`${API_URL}/auth/start`, {
                     method: 'POST',
@@ -379,50 +302,31 @@
                 });
                 
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.message || `Server error: ${response.status}`);
+                    throw new Error(`HTTP ${response.status}`);
                 }
                 
                 const data = await response.json();
-                console.log('Response:', data);
                 
-                if (data.success && data.clientId) {
-                    currentClientId = data.clientId;
-                    console.log(`✅ Client ID: ${currentClientId}`);
-                    showSuccess('Authentication started! Initializing WhatsApp client...');
-                    document.getElementById('refresh-btn').classList.remove('hidden');
-                    updateStatusBadge('initializing');
-                    
-                    showQRPlaceholder('⏳', 'Initializing WhatsApp Web...<br>Please wait 10-20 seconds');
-                    
+                if (data.success) {
+                    showSuccess('Initializing WhatsApp Web...');
+                    updateStatus('initializing');
+                    showPlaceholder('⏳', 'Starting WhatsApp Web...<br>This takes 10-20 seconds');
                     startPolling();
                 } else {
-                    throw new Error(data.message || 'Failed to start authentication');
+                    throw new Error(data.message || 'Failed to start');
                 }
             } catch (error) {
-                console.error('❌ Error:', error);
-                showError('Failed to start authentication: ' + error.message);
+                showError('Start failed: ' + error.message);
                 document.getElementById('start-btn').disabled = false;
-                updateStatusBadge('error');
+                updateStatus('error');
             }
         }
 
-        // Refresh QR
-        async function refreshQR() {
-            console.log('🔄 Manual refresh requested');
-            qrAttempts = 0;
-            showInfo('Refreshing QR code...');
-            loadQR();
-        }
-
-        // Reset Authentication
         async function resetAuth() {
-            if (!confirm('Are you sure you want to reset? This will clear the current session.')) {
-                return;
-            }
+            if (!confirm('Reset the current session?')) return;
 
             try {
-                console.log('🔄 Resetting session...');
+                showInfo('Resetting...');
                 const response = await fetch(`${API_URL}/auth/reset`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
@@ -431,109 +335,57 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    showSuccess('Session reset successfully!');
-                    console.log('✅ Reset successful');
+                    showSuccess('Reset successful!');
                     resetUI();
                     stopPolling();
                 } else {
-                    throw new Error(data.message || 'Reset failed');
+                    throw new Error(data.message);
                 }
             } catch (error) {
-                console.error('❌ Reset error:', error);
-                showError('Failed to reset: ' + error.message);
+                showError('Reset failed: ' + error.message);
             }
         }
 
-        // Load QR Code
         async function loadQR() {
-            if (!currentClientId) {
-                console.log('⏳ No client ID yet');
-                return;
-            }
-
-            if (qrAttempts >= MAX_QR_ATTEMPTS) {
-                console.error('❌ Max QR attempts reached');
+            if (attemptCount >= MAX_ATTEMPTS) {
                 stopPolling();
-                showError('QR code generation timeout. Please click Reset and try again.');
-                updateStatusBadge('error');
+                showError('Timeout waiting for QR code. Please reset and try again.');
                 document.getElementById('start-btn').disabled = false;
+                updateStatus('error');
                 return;
             }
 
-            qrAttempts++;
+            attemptCount++;
 
             try {
-                const response = await fetch(`${API_URL}/qr/${currentClientId}`);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                
+                const response = await fetch(`${API_URL}/qr/active`);
                 const data = await response.json();
-                console.log(`[${qrAttempts}/${MAX_QR_ATTEMPTS}] QR status: ${data.status}`);
                 
                 if (data.success && data.qrImage) {
-                    console.log('✅ QR code received!');
+                    console.log('✅ QR received');
                     showQRImage(data.qrImage);
-                    showSuccess('✅ QR code ready! Open WhatsApp and scan now.');
-                    showInfo('📱 Open WhatsApp → Settings → Linked Devices → Link a Device');
-                    updateStatusBadge('qr_ready');
-                    qrAttempts = 0; // Reset on success
+                    showSuccess('QR code ready! Scan with WhatsApp now.');
+                    showInfo('Open WhatsApp → Settings → Linked Devices → Scan QR');
+                    attemptCount = 0; // Reset on success
                 } else {
-                    const waitTime = Math.min(qrAttempts * 2, 20);
-                    showQRPlaceholder('⏳', `${data.message || 'Generating QR code...'}<br>Attempt ${qrAttempts}/${MAX_QR_ATTEMPTS}`);
-                    showInfo(`Waiting for QR code... (${waitTime}s)`);
+                    const progress = Math.min(attemptCount * 2.5, 100);
+                    showPlaceholder('⏳', `Loading... ${Math.round(progress)}%<br>${data.message || 'Initializing...'}`);
                 }
             } catch (error) {
-                console.error(`❌ QR load error:`, error);
-                showInfo('Connection issue, retrying...');
+                console.error('QR fetch error:', error);
             }
         }
 
-        // Show QR Image
-        function showQRImage(qrDataUrl) {
-            const qrImage = document.getElementById('qr-image');
-            const qrPlaceholder = document.getElementById('qr-placeholder');
-            
-            qrImage.src = qrDataUrl;
-            qrImage.classList.remove('hidden');
-            qrPlaceholder.classList.add('hidden');
-            
-            console.log('✅ QR image displayed');
-        }
-
-        // Show QR Placeholder
-        function showQRPlaceholder(emoji, text) {
-            const qrImage = document.getElementById('qr-image');
-            const qrPlaceholder = document.getElementById('qr-placeholder');
-            
-            qrImage.classList.add('hidden');
-            qrPlaceholder.classList.remove('hidden');
-            qrPlaceholder.innerHTML = `${emoji}<p>${text}</p>`;
-        }
-
-        // Check Status
         async function checkStatus() {
-            if (!currentClientId) {
-                return;
-            }
-
             try {
-                const response = await fetch(`${API_URL}/status/${currentClientId}`);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                
+                const response = await fetch(`${API_URL}/status/active`);
                 const data = await response.json();
-                console.log(`📊 Status: ${data.status}`);
-                updateStatusBadge(data.status);
                 
-                // Session saved successfully
+                updateStatus(data.status);
+                
                 if (data.status === 'session_saved') {
-                    console.log('✅ Session saved!');
-                    showSuccess('✅ Session saved successfully! Check your WhatsApp for Session ID message.');
                     stopPolling();
+                    showSuccess('✅ Session saved! Check WhatsApp for your Session ID.');
                     
                     if (data.sessionId) {
                         document.getElementById('session-id').textContent = data.sessionId;
@@ -543,97 +395,77 @@
                         document.getElementById('session-info').classList.add('show');
                     }
                     
+                    showPlaceholder('✅', 'Success!<br>Check WhatsApp inbox');
+                    showInfo('Session ID sent to your WhatsApp');
                     document.getElementById('start-btn').disabled = false;
-                    document.getElementById('refresh-btn').classList.add('hidden');
-                    
-                    showQRPlaceholder('✅', 'Authentication Complete!<br>Session ID sent to WhatsApp');
-                    showInfo('📱 Check your WhatsApp inbox for the Session ID message');
-                    
-                    currentClientId = null;
                 }
                 
-                // Handle failures
                 if (data.status === 'auth_failed' || data.status === 'error') {
-                    console.error('❌ Authentication failed');
                     stopPolling();
-                    showError('Authentication failed. Please click Reset and try again.');
+                    showError('Authentication failed. Please reset and try again.');
                     document.getElementById('start-btn').disabled = false;
-                    updateStatusBadge('auth_failed');
-                    currentClientId = null;
                 }
             } catch (error) {
-                console.error(`❌ Status check error:`, error);
+                console.error('Status error:', error);
             }
         }
 
-        // Update Status Badge
-        function updateStatusBadge(status) {
+        function showQRImage(dataUrl) {
+            document.getElementById('qr-image').src = dataUrl;
+            document.getElementById('qr-image').classList.remove('hidden');
+            document.getElementById('qr-placeholder').classList.add('hidden');
+        }
+
+        function showPlaceholder(emoji, text) {
+            document.getElementById('qr-image').classList.add('hidden');
+            const ph = document.getElementById('qr-placeholder');
+            ph.classList.remove('hidden');
+            ph.innerHTML = `${emoji}<p>${text}</p>`;
+        }
+
+        function updateStatus(status) {
             const badge = document.getElementById('status-badge');
             badge.className = 'status-badge ' + status;
             
-            const statusText = {
+            const text = {
                 'disconnected': 'Disconnected',
-                'initializing': '⏳ Initializing...',
-                'qr_ready': '📱 Ready to Scan',
+                'initializing': '⏳ Initializing',
+                'qr_ready': '📱 Ready',
                 'authenticated': '🔐 Authenticated',
-                'ready': '💾 Saving...',
+                'ready': '💾 Saving',
                 'session_saved': '✅ Saved',
                 'auth_failed': '❌ Failed',
-                'error': '❌ Error',
-                'not_found': 'Not Found'
+                'error': '❌ Error'
             };
             
-            badge.textContent = statusText[status] || status;
+            badge.textContent = text[status] || status;
         }
 
-        // Start Polling
         function startPolling() {
-            if (isPolling) {
-                console.log('⚠️ Already polling');
-                return;
-            }
-            
-            isPolling = true;
-            console.log('🔄 Starting polling (QR: 2s, Status: 3s)');
-            
-            // First QR load after 3 seconds
-            setTimeout(loadQR, 3000);
-            
-            // Then poll regularly
+            console.log('▶️  Polling started');
+            setTimeout(loadQR, 2000); // First load after 2s
             qrInterval = setInterval(loadQR, 2000);
             statusInterval = setInterval(checkStatus, 3000);
         }
 
-        // Stop Polling
         function stopPolling() {
-            isPolling = false;
-            console.log('🛑 Stopping polling');
-            
-            if (qrInterval) {
-                clearInterval(qrInterval);
-                qrInterval = null;
-            }
-            if (statusInterval) {
-                clearInterval(statusInterval);
-                statusInterval = null;
-            }
+            console.log('⏸️  Polling stopped');
+            clearInterval(qrInterval);
+            clearInterval(statusInterval);
+            qrInterval = null;
+            statusInterval = null;
         }
 
-        // Reset UI
         function resetUI() {
-            showQRPlaceholder('📱', 'Click Start to begin');
+            showPlaceholder('📱', 'Click Start to begin');
             document.getElementById('start-btn').disabled = false;
-            document.getElementById('refresh-btn').classList.add('hidden');
             document.getElementById('session-info').classList.remove('show');
-            showInfo('Click "Start Authentication" to begin');
-            updateStatusBadge('disconnected');
-            currentClientId = null;
-            qrAttempts = 0;
+            showInfo('Ready to authenticate');
+            updateStatus('disconnected');
+            attemptCount = 0;
         }
 
-        // UI Helpers
         function showSuccess(msg) {
-            console.log(`✅ ${msg}`);
             const el = document.getElementById('success-msg');
             el.textContent = msg;
             el.classList.add('show');
@@ -641,7 +473,6 @@
         }
 
         function showError(msg) {
-            console.error(`❌ ${msg}`);
             const el = document.getElementById('error-msg');
             el.textContent = msg;
             el.classList.add('show');
@@ -649,30 +480,24 @@
         }
 
         function showInfo(msg) {
-            console.log(`ℹ️ ${msg}`);
             document.getElementById('qr-info').textContent = msg;
         }
 
-        // Initialize on page load
-        console.log('🚀 Scanner Service UI loaded');
-        console.log(`API URL: ${API_URL}`);
+        // Initialize
+        console.log('✅ Scanner UI loaded');
         
-        // Test server connectivity
         fetch(`${API_URL}/health`)
-            .then(res => res.json())
-            .then(data => {
-                console.log(`✅ Server connected:`, data);
-                showInfo('Server connected. Ready to authenticate!');
+            .then(r => r.json())
+            .then(d => {
+                console.log('Server:', d);
+                showInfo('Server connected. Ready!');
             })
-            .catch(err => {
-                console.error(`❌ Server connection failed:`, err);
-                showError('⚠️ Cannot connect to server. Please refresh the page.');
+            .catch(e => {
+                console.error('Connection failed:', e);
+                showError('Cannot connect to server');
             });
 
-        // Cleanup on page unload
-        window.addEventListener('beforeunload', () => {
-            stopPolling();
-        });
+        window.addEventListener('beforeunload', stopPolling);
     </script>
 </body>
 </html>
