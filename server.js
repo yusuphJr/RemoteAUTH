@@ -1,7 +1,6 @@
 // ============================================
 // SERVICE 1: MULTI-TENANT SCANNER SERVICE
-// Port: 4000
-// Purpose: Multiple users can authenticate, each gets unique session ID
+// Render Deployment Version
 // ============================================
 
 const express = require('express');
@@ -11,13 +10,13 @@ const mongoose = require('mongoose');
 const { MongoStore } = require('wwebjs-mongo');
 const qrcode = require('qrcode');
 const crypto = require('crypto');
-const axios = require('axios');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Store multiple client instances (one per authentication session)
 const activeClients = new Map();
@@ -126,7 +125,7 @@ async function initializeAuthClient(clientId) {
     
     const client = new Client({
         authStrategy: new RemoteAuth({
-            clientId: clientId,  // Unique client ID for this auth session
+            clientId: clientId,
             store: mongoStore,
             backupSyncIntervalMs: 300000
         }),
@@ -139,6 +138,7 @@ async function initializeAuthClient(clientId) {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
+                '--single-process',
                 '--disable-gpu'
             ],
         }
@@ -351,7 +351,11 @@ app.post('/api/auth/start', async (req, res) => {
     // Destroy any existing clients to prevent Puppeteer crashes
     for (const [clientId, clientState] of activeClients.entries()) {
         console.log(`🧹 Destroying previous client: ${clientId}`);
-        await clientState.client.destroy();
+        try {
+            await clientState.client.destroy();
+        } catch (err) {
+            console.error(`Error destroying client ${clientId}:`, err);
+        }
         activeClients.delete(clientId);
     }
 
@@ -376,6 +380,27 @@ app.post('/api/auth/start', async (req, res) => {
     }
 });
 
+// Reset Authentication
+app.post('/api/auth/reset', async (req, res) => {
+    try {
+        // Destroy all active clients
+        for (const [clientId, clientState] of activeClients.entries()) {
+            await clientState.client.destroy();
+            activeClients.delete(clientId);
+        }
+        
+        res.json({
+            success: true,
+            message: 'All sessions reset successfully'
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to reset',
+            error: error.message
+        });
+    }
+});
 
 // Get QR Code for Client
 app.get('/api/qr/:clientId', (req, res) => {
@@ -512,7 +537,7 @@ app.post('/api/sessions/verify', async (req, res) => {
 
 // Root Route
 app.get('/', (req, res) => {
-    res.sendFile('index.html', { root: 'public' });
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ============================================
@@ -536,10 +561,15 @@ function getStatusMessage(status) {
 // ============================================
 // START SERVER
 // ============================================
-const PORT = process.env.PORT || process.env.SCANNER_PORT || 4000;
+const PORT = process.env.PORT || 4000;
 
 async function startServer() {
     try {
+        // Validate required environment variables
+        if (!process.env.MONGODB_URI) {
+            throw new Error('MONGODB_URI environment variable is required');
+        }
+
         // Connect to MongoDB
         await mongoose.connect(process.env.MONGODB_URI);
         console.log('✅ MongoDB Connected');
@@ -549,11 +579,11 @@ async function startServer() {
         console.log('✅ MongoDB Store initialized for RemoteAuth');
 
         // Start Express Server
-        app.listen(PORT, () => {
+        app.listen(PORT, '0.0.0.0', () => {
             console.log('\n' + '='.repeat(60));
             console.log('🎉 SERVICE 1: MULTI-TENANT SCANNER STARTED');
             console.log('='.repeat(60));
-            console.log(`📱 Frontend: http://localhost:${PORT}`);
+            console.log(`📱 Server running on port: ${PORT}`);
             console.log(`🔌 API: http://localhost:${PORT}/api`);
             console.log('='.repeat(60));
             console.log('\n📋 Multi-Tenant Features:');
@@ -561,18 +591,12 @@ async function startServer() {
             console.log('   ✓ Each user gets unique Session ID');
             console.log('   ✓ Session ID sent to user\'s WhatsApp inbox');
             console.log('   ✓ Users deploy their own backend with Session ID');
-            console.log('   ✓ All sessions stored in MongoDB');
-            console.log('\n💡 Instructions:');
-            console.log('   1. Users open: http://localhost:' + PORT);
-            console.log('   2. Click "Start Authentication"');
-            console.log('   3. Scan QR code with WhatsApp');
-            console.log('   4. Receive Session ID in WhatsApp inbox');
-            console.log('   5. Deploy backend with SESSION_ID in .env\n');
+            console.log('   ✓ All sessions stored in MongoDB\n');
         });
 
     } catch (error) {
         console.error('❌ Failed to start server:', error);
-        console.log('💡 Check your MONGODB_URI in .env file');
+        console.log('💡 Check your MONGODB_URI in environment variables');
         process.exit(1);
     }
 }
@@ -597,5 +621,20 @@ process.on('SIGINT', async () => {
     
     await mongoose.connection.close();
     console.log('✅ Shutdown complete');
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('\n🛑 SIGTERM received, shutting down gracefully...');
+    
+    for (const [clientId, clientState] of activeClients.entries()) {
+        try {
+            await clientState.client.destroy();
+        } catch (error) {
+            console.error(`Failed to cleanup ${clientId}:`, error);
+        }
+    }
+    
+    await mongoose.connection.close();
     process.exit(0);
 });
