@@ -1,13 +1,12 @@
 // ============================================
 // SERVICE 1: MULTI-TENANT SCANNER SERVICE
-// Render Deployment Version - Fixed
+// FINAL PRODUCTION VERSION - RENDER OPTIMIZED
 // ============================================
 
 const express = require('express');
 const cors = require('cors');
-const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { Client, NoAuth } = require('whatsapp-web.js');
 const mongoose = require('mongoose');
-const { MongoStore } = require('wwebjs-mongo');
 const qrcode = require('qrcode');
 const crypto = require('crypto');
 const path = require('path');
@@ -18,10 +17,17 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Store multiple client instances
-const activeClients = new Map();
-let mongoStore = null;
-let isShuttingDown = false;
+// Single client instance to save memory
+let activeClient = null;
+let clientState = {
+    qrCode: null,
+    qrImage: null,
+    status: 'disconnected',
+    sessionId: null,
+    phoneNumber: null,
+    isInitializing: false,
+    createdAt: null
+};
 
 // ============================================
 // ENCRYPTION UTILITIES
@@ -29,10 +35,7 @@ let isShuttingDown = false;
 const ALGORITHM = 'aes-256-gcm';
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY 
     ? Buffer.from(process.env.ENCRYPTION_KEY.substring(0, 64), 'hex')
-    : (() => {
-        console.warn('⚠️  WARNING: No ENCRYPTION_KEY in .env! Generating temporary key.');
-        return crypto.randomBytes(32);
-    })();
+    : crypto.randomBytes(32);
 
 function encryptData(text) {
     try {
@@ -68,462 +71,359 @@ const SessionSchema = new mongoose.Schema({
         index: true
     },
     authData: {
-        serialized: {
-            type: String,
-            required: true
-        },
-        remoteAuthPath: {
-            type: String,
-            required: true
-        }
+        serialized: String,
+        remoteAuthPath: String
     },
     metadata: {
         deviceName: String,
         platform: String,
         whatsappVersion: String,
-        createdAt: {
-            type: Date,
-            default: Date.now
-        },
-        lastActive: {
-            type: Date,
-            default: Date.now
-        },
-        lastSync: {
-            type: Date,
-            default: Date.now
-        }
+        createdAt: { type: Date, default: Date.now },
+        lastActive: { type: Date, default: Date.now }
     },
     status: {
         type: String,
-        enum: ['pending', 'active', 'inactive', 'expired'],
-        default: 'pending',
-        index: true
+        enum: ['pending', 'active', 'inactive'],
+        default: 'active'
     },
     encryption: {
-        algorithm: {
-            type: String,
-            default: 'aes-256-gcm'
-        },
         iv: String,
         authTag: String
     }
-}, {
-    timestamps: true
-});
-
-SessionSchema.index({ status: 1, 'metadata.lastActive': -1 });
-SessionSchema.index({ phoneNumber: 1, status: 1 });
+}, { timestamps: true });
 
 const Session = mongoose.model('Session', SessionSchema);
 
 // ============================================
-// CLEANUP OLD REMOTE AUTH DATA
+// DESTROY CLIENT SAFELY
 // ============================================
-async function cleanupOldRemoteAuthData(clientId) {
+async function destroyClient() {
+    if (!activeClient) return;
+    
+    console.log('🧹 Destroying active client...');
     try {
-        console.log(`🧹 Cleaning up old RemoteAuth data for: ${clientId}`);
-        
-        // Delete from RemoteAuth collection
-        const RemoteAuth = mongoose.connection.collection('RemoteAuth');
-        const result = await RemoteAuth.deleteOne({ _id: clientId });
-        
-        if (result.deletedCount > 0) {
-            console.log(`✅ Deleted old RemoteAuth data for: ${clientId}`);
-        }
+        await activeClient.destroy();
+        console.log('✅ Client destroyed');
     } catch (error) {
-        console.error(`⚠️  Failed to cleanup RemoteAuth data:`, error.message);
+        console.error('⚠️  Error destroying client:', error.message);
     }
-}
-
-// ============================================
-// INITIALIZE WHATSAPP CLIENT FOR A USER
-// ============================================
-async function initializeAuthClient(clientId) {
-    console.log(`🚀 Initializing client for: ${clientId}`);
     
-    // Clean up any existing RemoteAuth data for this client
-    await cleanupOldRemoteAuthData(clientId);
-    
-    const client = new Client({
-        authStrategy: new RemoteAuth({
-            clientId: clientId,
-            store: mongoStore,
-            backupSyncIntervalMs: 300000
-        }),
-        puppeteer: {
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ],
-        },
-        qrMaxRetries: 5
-    });
-
-    // Store client state
-    const clientState = {
-        client: client,
+    activeClient = null;
+    clientState = {
         qrCode: null,
         qrImage: null,
-        status: 'initializing',
+        status: 'disconnected',
         sessionId: null,
         phoneNumber: null,
-        createdAt: Date.now()
+        isInitializing: false,
+        createdAt: null
     };
-
-    activeClients.set(clientId, clientState);
-
-    // QR Code Generation
-    client.on('qr', async (qr) => {
-        console.log(`📱 QR RECEIVED for client: ${clientId}`);
-        clientState.qrCode = qr;
-        clientState.status = 'qr_ready';
-        
-        try {
-            clientState.qrImage = await qrcode.toDataURL(qr);
-            console.log(`✅ QR code generated and stored for: ${clientId}`);
-        } catch (err) {
-            console.error('❌ QR code generation failed:', err);
-        }
-    });
-
-    // Authentication Success
-    client.on('authenticated', () => {
-        console.log(`🔐 Authentication Successful for: ${clientId}`);
-        clientState.status = 'authenticated';
-    });
-
-    // Client Ready
-    client.on('ready', async () => {
-        console.log(`✅ CLIENT READY for: ${clientId}`);
-        clientState.status = 'ready';
-
-        try {
-            const info = client.info;
-            const phoneNumber = info.wid.user;
-            const deviceName = info.pushname || 'Unknown Device';
-            const platform = info.platform || 'web';
-
-            const sessionId = `session_${phoneNumber}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-            
-            clientState.sessionId = sessionId;
-            clientState.phoneNumber = phoneNumber;
-
-            console.log(`📞 Phone: ${phoneNumber}`);
-            console.log(`🔑 Session ID: ${sessionId}`);
-
-            const sessionData = {
-                phoneNumber: phoneNumber,
-                deviceName: deviceName,
-                platform: platform,
-                wid: info.wid,
-                me: info.me,
-                timestamp: new Date().toISOString(),
-                remoteAuthPath: clientId
-            };
-
-            const serialized = JSON.stringify(sessionData);
-            const encrypted = encryptData(serialized);
-
-            await Session.create({
-                sessionId: sessionId,
-                phoneNumber: phoneNumber,
-                authData: {
-                    serialized: encrypted.encrypted,
-                    remoteAuthPath: clientId
-                },
-                metadata: {
-                    deviceName: deviceName,
-                    platform: platform,
-                    whatsappVersion: info.wwebVersion || 'unknown',
-                    createdAt: new Date(),
-                    lastActive: new Date(),
-                    lastSync: new Date()
-                },
-                status: 'active',
-                encryption: {
-                    algorithm: 'aes-256-gcm',
-                    iv: encrypted.iv,
-                    authTag: encrypted.authTag
-                }
-            });
-
-            console.log('💾 Session saved to MongoDB');
-
-            await sendSessionIdToUser(client, phoneNumber, sessionId, deviceName);
-
-            clientState.status = 'session_saved';
-
-            // Cleanup after success
-            setTimeout(async () => {
-                console.log(`🧹 Cleaning up successful client: ${clientId}`);
-                try {
-                    await client.destroy();
-                    activeClients.delete(clientId);
-                } catch (err) {
-                    console.error('Cleanup error:', err);
-                }
-            }, 30000);
-
-        } catch (error) {
-            console.error('❌ Failed to save session:', error);
-            clientState.status = 'error';
-        }
-    });
-
-    // Loading screen
-    client.on('loading_screen', (percent, message) => {
-        console.log(`⏳ Loading [${clientId}]: ${percent}% - ${message}`);
-    });
-
-    // Authentication Failure
-    client.on('auth_failure', async (msg) => {
-        console.error(`❌ Authentication Failed [${clientId}]:`, msg);
-        clientState.status = 'auth_failed';
-        
-        // Cleanup on failure
-        setTimeout(async () => {
-            try {
-                await client.destroy();
-                activeClients.delete(clientId);
-                await cleanupOldRemoteAuthData(clientId);
-            } catch (err) {
-                console.error('Cleanup error:', err);
-            }
-        }, 5000);
-    });
-
-    // Disconnected
-    client.on('disconnected', (reason) => {
-        console.log(`🔌 Client Disconnected [${clientId}]:`, reason);
-        clientState.status = 'disconnected';
-    });
-
-    // Remote session saved
-    client.on('remote_session_saved', () => {
-        console.log(`💾 Remote session saved [${clientId}]`);
-    });
-
-    // Initialize client
-    try {
-        await client.initialize();
-    } catch (error) {
-        console.error(`❌ Failed to initialize client ${clientId}:`, error);
-        clientState.status = 'error';
-        activeClients.delete(clientId);
-        throw error;
-    }
-    
-    return clientId;
 }
 
 // ============================================
-// SEND SESSION ID TO USER
+// INITIALIZE WHATSAPP CLIENT
 // ============================================
-async function sendSessionIdToUser(client, phoneNumber, sessionId, deviceName) {
+async function initializeClient() {
+    if (clientState.isInitializing) {
+        console.log('⚠️  Already initializing, skipping...');
+        return false;
+    }
+    
+    if (activeClient) {
+        console.log('🧹 Destroying existing client first...');
+        await destroyClient();
+    }
+    
+    clientState.isInitializing = true;
+    clientState.status = 'initializing';
+    clientState.createdAt = Date.now();
+    
+    console.log('🚀 Creating new WhatsApp client...');
+    
+    try {
+        const client = new Client({
+            authStrategy: new NoAuth(),
+            puppeteer: {
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                    '--disable-web-security'
+                ],
+                timeout: 60000
+            },
+            qrMaxRetries: 3
+        });
+
+        activeClient = client;
+
+        // QR Code Generation
+        client.on('qr', async (qr) => {
+            console.log('📱 QR CODE RECEIVED');
+            clientState.qrCode = qr;
+            clientState.status = 'qr_ready';
+            
+            try {
+                clientState.qrImage = await qrcode.toDataURL(qr);
+                console.log('✅ QR code converted to image');
+            } catch (err) {
+                console.error('❌ QR generation failed:', err);
+            }
+        });
+
+        // Authenticated
+        client.on('authenticated', () => {
+            console.log('🔐 AUTHENTICATED');
+            clientState.status = 'authenticated';
+        });
+
+        // Ready - Save Session
+        client.on('ready', async () => {
+            console.log('✅ CLIENT READY');
+            clientState.status = 'ready';
+
+            try {
+                const info = client.info;
+                const phoneNumber = info.wid.user;
+                const deviceName = info.pushname || 'Unknown';
+                const sessionId = `session_${phoneNumber}_${Date.now()}`;
+                
+                clientState.sessionId = sessionId;
+                clientState.phoneNumber = phoneNumber;
+
+                console.log(`📞 Phone: ${phoneNumber}`);
+                console.log(`🔑 Session ID: ${sessionId}`);
+
+                // Serialize and encrypt
+                const sessionData = {
+                    phoneNumber,
+                    deviceName,
+                    wid: info.wid,
+                    timestamp: new Date().toISOString()
+                };
+
+                const serialized = JSON.stringify(sessionData);
+                const encrypted = encryptData(serialized);
+
+                // Save to MongoDB
+                await Session.create({
+                    sessionId,
+                    phoneNumber,
+                    authData: {
+                        serialized: encrypted.encrypted
+                    },
+                    metadata: {
+                        deviceName,
+                        platform: info.platform || 'web',
+                        whatsappVersion: info.wwebVersion || 'unknown'
+                    },
+                    status: 'active',
+                    encryption: {
+                        iv: encrypted.iv,
+                        authTag: encrypted.authTag
+                    }
+                });
+
+                console.log('💾 Session saved to MongoDB');
+
+                // Send to WhatsApp
+                await sendSessionToWhatsApp(client, phoneNumber, sessionId, deviceName);
+
+                clientState.status = 'session_saved';
+
+                // Cleanup after 30 seconds
+                setTimeout(async () => {
+                    console.log('🧹 Auto-cleanup after success');
+                    await destroyClient();
+                }, 30000);
+
+            } catch (error) {
+                console.error('❌ Save session error:', error);
+                clientState.status = 'error';
+            }
+        });
+
+        // Loading
+        client.on('loading_screen', (percent) => {
+            if (percent % 25 === 0) {
+                console.log(`⏳ Loading: ${percent}%`);
+            }
+        });
+
+        // Auth Failure
+        client.on('auth_failure', async () => {
+            console.error('❌ AUTHENTICATION FAILED');
+            clientState.status = 'auth_failed';
+            setTimeout(() => destroyClient(), 5000);
+        });
+
+        // Disconnected
+        client.on('disconnected', () => {
+            console.log('🔌 DISCONNECTED');
+            clientState.status = 'disconnected';
+        });
+
+        // Initialize
+        console.log('⏳ Initializing WhatsApp Web...');
+        await client.initialize();
+        clientState.isInitializing = false;
+        
+        return true;
+
+    } catch (error) {
+        console.error('❌ Initialize error:', error.message);
+        clientState.status = 'error';
+        clientState.isInitializing = false;
+        await destroyClient();
+        return false;
+    }
+}
+
+// ============================================
+// SEND SESSION TO WHATSAPP
+// ============================================
+async function sendSessionToWhatsApp(client, phoneNumber, sessionId, deviceName) {
     try {
         const chatId = `${phoneNumber}@c.us`;
         
-        const message = `🎉 *WhatsApp Bot Authentication Successful!*
+        const message = `🎉 *Authentication Successful!*
 
-✅ Your bot session has been created and saved securely.
+✅ Your session has been created.
 
-📋 *Session Details:*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔑 *Session ID:*
 \`${sessionId}\`
 
 📱 *Device:* ${deviceName}
 📅 *Created:* ${new Date().toLocaleString()}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🚀 *Next Steps - Deploy Your Bot:*
+🚀 *Next Steps:*
+1. Copy the Session ID above
+2. Add to your .env: SESSION_ID=${sessionId}
+3. Deploy your bot backend
+4. Your bot will auto-connect!
 
-1️⃣ Copy your Session ID above
-2️⃣ Add it to your .env file:
-   \`SESSION_ID=${sessionId}\`
-3️⃣ Deploy your bot backend
-4️⃣ Your bot will auto-connect!
-
-⚠️ *Important:*
-• Keep this Session ID SECRET
-• Don't share it with anyone
-• Store it safely in your .env file
-• You can use this ID to deploy multiple bot instances
-
-💡 *Need help?* Check the documentation or contact support.
+⚠️ Keep this Session ID SECRET!
 
 Happy botting! 🤖✨`;
 
         await client.sendMessage(chatId, message);
-        console.log(`✅ Session ID sent to user: ${phoneNumber}`);
+        console.log(`✅ Session ID sent to ${phoneNumber}`);
 
     } catch (error) {
-        console.error('❌ Failed to send session ID to user:', error);
+        console.error('❌ Failed to send message:', error.message);
     }
 }
 
 // ============================================
-// CLEANUP STALE CLIENTS
+// AUTO-TIMEOUT FOR STALE SESSIONS
 // ============================================
-function cleanupStaleClients() {
-    const now = Date.now();
-    const STALE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-
-    for (const [clientId, clientState] of activeClients.entries()) {
-        const age = now - clientState.createdAt;
-        
-        if (age > STALE_TIMEOUT && clientState.status !== 'session_saved') {
-            console.log(`🧹 Removing stale client: ${clientId} (age: ${Math.floor(age/1000)}s)`);
-            
-            try {
-                clientState.client.destroy();
-            } catch (err) {
-                console.error(`Error destroying stale client:`, err);
-            }
-            
-            activeClients.delete(clientId);
-        }
+function checkTimeout() {
+    if (!clientState.createdAt) return;
+    
+    const age = Date.now() - clientState.createdAt;
+    const TIMEOUT = 5 * 60 * 1000; // 5 minutes
+    
+    if (age > TIMEOUT && clientState.status !== 'session_saved') {
+        console.log('⏱️  Session timeout - cleaning up');
+        destroyClient();
     }
 }
 
-// Run cleanup every 2 minutes
-setInterval(cleanupStaleClients, 2 * 60 * 1000);
+setInterval(checkTimeout, 60000); // Check every minute
 
 // ============================================
 // API ROUTES
 // ============================================
 
-// Health Check
 app.get('/api/health', (req, res) => {
     res.json({
         service: 'scanner',
         status: 'ok',
-        activeClients: activeClients.size,
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime()
+        clientStatus: clientState.status,
+        hasActiveClient: !!activeClient,
+        timestamp: new Date().toISOString()
     });
 });
 
-// Start New Authentication Session
 app.post('/api/auth/start', async (req, res) => {
-    if (isShuttingDown) {
-        return res.status(503).json({
-            success: false,
-            message: 'Server is shutting down, please try again in a moment'
-        });
-    }
-
-    // Limit concurrent authentications to prevent resource exhaustion
-    if (activeClients.size >= 3) {
-        return res.status(429).json({
-            success: false,
-            message: 'Too many active authentications. Please try again in a few minutes.'
-        });
-    }
-
     try {
-        const clientId = `auth_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+        if (clientState.isInitializing) {
+            return res.json({
+                success: false,
+                message: 'Already initializing, please wait...'
+            });
+        }
+
+        if (activeClient && clientState.status === 'qr_ready') {
+            return res.json({
+                success: true,
+                message: 'Client already active',
+                clientId: 'active'
+            });
+        }
+
+        console.log('🆕 New authentication request');
         
-        console.log(`🆕 New auth request - Creating client: ${clientId}`);
-        
-        // Start initialization in background
-        initializeAuthClient(clientId).catch(err => {
-            console.error(`Failed to initialize ${clientId}:`, err);
-            activeClients.delete(clientId);
+        // Start initialization (non-blocking)
+        initializeClient().catch(err => {
+            console.error('Init failed:', err);
         });
-        
+
         res.json({
             success: true,
             message: 'Authentication started',
-            clientId: clientId
+            clientId: 'active'
         });
+
     } catch (error) {
-        console.error('Failed to start auth:', error);
+        console.error('Start auth error:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to start authentication',
-            error: error.message
+            message: error.message
         });
     }
 });
 
-// Reset Authentication
 app.post('/api/auth/reset', async (req, res) => {
     try {
-        console.log(`🔄 Reset requested - cleaning up ${activeClients.size} clients`);
-        
-        for (const [clientId, clientState] of activeClients.entries()) {
-            try {
-                await clientState.client.destroy();
-                await cleanupOldRemoteAuthData(clientId);
-            } catch (err) {
-                console.error(`Error cleaning up ${clientId}:`, err);
-            }
-            activeClients.delete(clientId);
-        }
-        
+        console.log('🔄 Reset requested');
+        await destroyClient();
         res.json({
             success: true,
-            message: 'All sessions reset successfully'
+            message: 'Reset successful'
         });
     } catch (error) {
         res.status(500).json({
             success: false,
-            message: 'Failed to reset',
-            error: error.message
+            message: error.message
         });
     }
 });
 
-// Get QR Code
 app.get('/api/qr/:clientId', (req, res) => {
-    const { clientId } = req.params;
-    const clientState = activeClients.get(clientId);
-
-    if (!clientState) {
-        return res.json({
-            success: false,
-            message: 'Session not found or expired',
-            status: 'not_found'
-        });
-    }
-
     if (clientState.qrImage) {
-        res.json({ 
-            success: true, 
-            qr: clientState.qrCode,
+        res.json({
+            success: true,
             qrImage: clientState.qrImage,
             status: clientState.status
         });
     } else {
-        res.json({ 
-            success: false, 
+        res.json({
+            success: false,
             message: getStatusMessage(clientState.status),
             status: clientState.status
         });
     }
 });
 
-// Get Status
 app.get('/api/status/:clientId', (req, res) => {
-    const { clientId } = req.params;
-    const clientState = activeClients.get(clientId);
-
-    if (!clientState) {
-        return res.json({
-            status: 'not_found',
-            message: 'Session not found or expired'
-        });
-    }
-
     res.json({
         status: clientState.status,
         hasQR: !!clientState.qrCode,
@@ -533,18 +433,17 @@ app.get('/api/status/:clientId', (req, res) => {
     });
 });
 
-// Get All Sessions
 app.get('/api/sessions', async (req, res) => {
     try {
         const sessions = await Session.find({})
             .select('-authData.serialized')
-            .sort({ 'metadata.createdAt': -1 })
+            .sort({ createdAt: -1 })
             .limit(50);
         
         res.json({
             success: true,
             count: sessions.length,
-            sessions: sessions
+            sessions
         });
     } catch (error) {
         res.status(500).json({
@@ -554,11 +453,11 @@ app.get('/api/sessions', async (req, res) => {
     }
 });
 
-// Get Specific Session
 app.get('/api/sessions/:sessionId', async (req, res) => {
     try {
-        const session = await Session.findOne({ sessionId: req.params.sessionId })
-            .select('-authData.serialized');
+        const session = await Session.findOne({ 
+            sessionId: req.params.sessionId 
+        }).select('-authData.serialized');
         
         if (!session) {
             return res.status(404).json({
@@ -567,10 +466,7 @@ app.get('/api/sessions/:sessionId', async (req, res) => {
             });
         }
 
-        res.json({
-            success: true,
-            session: session
-        });
+        res.json({ success: true, session });
     } catch (error) {
         res.status(500).json({
             success: false,
@@ -579,7 +475,6 @@ app.get('/api/sessions/:sessionId', async (req, res) => {
     }
 });
 
-// Verify Session
 app.post('/api/sessions/verify', async (req, res) => {
     try {
         const { sessionId } = req.body;
@@ -587,27 +482,24 @@ app.post('/api/sessions/verify', async (req, res) => {
         if (!sessionId) {
             return res.status(400).json({
                 success: false,
-                message: 'Session ID is required'
+                message: 'Session ID required'
             });
         }
 
-        const session = await Session.findOne({ sessionId, status: 'active' });
+        const session = await Session.findOne({ 
+            sessionId, 
+            status: 'active' 
+        });
         
-        if (session) {
-            res.json({
-                success: true,
-                exists: true,
+        res.json({
+            success: !!session,
+            exists: !!session,
+            ...(session && {
                 phoneNumber: session.phoneNumber,
                 deviceName: session.metadata.deviceName,
                 createdAt: session.metadata.createdAt
-            });
-        } else {
-            res.json({
-                success: false,
-                exists: false,
-                message: 'Session not found or inactive'
-            });
-        }
+            })
+        });
     } catch (error) {
         res.status(500).json({
             success: false,
@@ -616,25 +508,22 @@ app.post('/api/sessions/verify', async (req, res) => {
     }
 });
 
-// Root Route
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Helper Functions
 function getStatusMessage(status) {
     const messages = {
-        'initializing': 'Initializing WhatsApp client...',
-        'qr_ready': 'QR code ready - scan with WhatsApp',
-        'authenticated': 'Authenticated - extracting session...',
-        'ready': 'Session data being saved...',
-        'session_saved': 'Session saved! Check your WhatsApp for Session ID',
-        'auth_failed': 'Authentication failed - please try again',
-        'disconnected': 'Disconnected',
-        'error': 'An error occurred',
-        'not_found': 'Session not found or expired'
+        'disconnected': 'Not connected',
+        'initializing': 'Initializing WhatsApp...',
+        'qr_ready': 'QR ready - scan now',
+        'authenticated': 'Authenticated',
+        'ready': 'Saving session...',
+        'session_saved': 'Session saved successfully',
+        'auth_failed': 'Authentication failed',
+        'error': 'Error occurred'
     };
-    return messages[status] || 'Unknown status';
+    return messages[status] || status;
 }
 
 // ============================================
@@ -645,26 +534,24 @@ const PORT = process.env.PORT || 4000;
 async function startServer() {
     try {
         if (!process.env.MONGODB_URI) {
-            throw new Error('MONGODB_URI environment variable is required');
+            throw new Error('MONGODB_URI required');
         }
 
         await mongoose.connect(process.env.MONGODB_URI);
         console.log('✅ MongoDB Connected');
 
-        mongoStore = new MongoStore({ mongoose });
-        console.log('✅ MongoDB Store initialized for RemoteAuth');
-
         app.listen(PORT, '0.0.0.0', () => {
             console.log('\n' + '='.repeat(60));
-            console.log('🎉 SERVICE 1: MULTI-TENANT SCANNER STARTED');
+            console.log('🎉 SCANNER SERVICE STARTED');
             console.log('='.repeat(60));
-            console.log(`📱 Server running on port: ${PORT}`);
-            console.log(`🔌 Health: /api/health`);
+            console.log(`📱 Port: ${PORT}`);
+            console.log(`💾 Database: Connected`);
+            console.log(`🔐 Encryption: Enabled`);
             console.log('='.repeat(60) + '\n');
         });
 
     } catch (error) {
-        console.error('❌ Failed to start server:', error);
+        console.error('❌ Startup failed:', error);
         process.exit(1);
     }
 }
@@ -674,40 +561,23 @@ startServer();
 // ============================================
 // GRACEFUL SHUTDOWN
 // ============================================
-async function gracefulShutdown(signal) {
-    console.log(`\n🛑 ${signal} received, shutting down gracefully...`);
-    isShuttingDown = true;
+async function shutdown(signal) {
+    console.log(`\n🛑 ${signal} - Shutting down...`);
     
-    // Stop accepting new requests
-    console.log('⏸️  Stopping new authentications...');
-    
-    // Destroy all active clients
-    const cleanupPromises = [];
-    for (const [clientId, clientState] of activeClients.entries()) {
-        console.log(`🧹 Cleaning up client: ${clientId}`);
-        cleanupPromises.push(
-            clientState.client.destroy().catch(err => 
-                console.error(`Error destroying ${clientId}:`, err)
-            )
-        );
-    }
-    
-    await Promise.all(cleanupPromises);
-    activeClients.clear();
-    
+    await destroyClient();
     await mongoose.connection.close();
+    
     console.log('✅ Shutdown complete');
     process.exit(0);
 }
 
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Handle uncaught errors
-process.on('uncaughtException', (error) => {
-    console.error('❌ Uncaught Exception:', error);
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (err) => {
+    console.error('❌ Unhandled Rejection:', err);
 });
