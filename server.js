@@ -1,6 +1,6 @@
 // ============================================
 // SERVICE 1: MULTI-TENANT SCANNER SERVICE
-// Render Deployment Version
+// Render Deployment Version - Fixed
 // ============================================
 
 const express = require('express');
@@ -18,10 +18,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Store multiple client instances (one per authentication session)
+// Store multiple client instances
 const activeClients = new Map();
-
 let mongoStore = null;
+let isShuttingDown = false;
 
 // ============================================
 // ENCRYPTION UTILITIES
@@ -118,10 +118,32 @@ SessionSchema.index({ phoneNumber: 1, status: 1 });
 const Session = mongoose.model('Session', SessionSchema);
 
 // ============================================
+// CLEANUP OLD REMOTE AUTH DATA
+// ============================================
+async function cleanupOldRemoteAuthData(clientId) {
+    try {
+        console.log(`🧹 Cleaning up old RemoteAuth data for: ${clientId}`);
+        
+        // Delete from RemoteAuth collection
+        const RemoteAuth = mongoose.connection.collection('RemoteAuth');
+        const result = await RemoteAuth.deleteOne({ _id: clientId });
+        
+        if (result.deletedCount > 0) {
+            console.log(`✅ Deleted old RemoteAuth data for: ${clientId}`);
+        }
+    } catch (error) {
+        console.error(`⚠️  Failed to cleanup RemoteAuth data:`, error.message);
+    }
+}
+
+// ============================================
 // INITIALIZE WHATSAPP CLIENT FOR A USER
 // ============================================
 async function initializeAuthClient(clientId) {
     console.log(`🚀 Initializing client for: ${clientId}`);
+    
+    // Clean up any existing RemoteAuth data for this client
+    await cleanupOldRemoteAuthData(clientId);
     
     const client = new Client({
         authStrategy: new RemoteAuth({
@@ -141,7 +163,8 @@ async function initializeAuthClient(clientId) {
                 '--single-process',
                 '--disable-gpu'
             ],
-        }
+        },
+        qrMaxRetries: 5
     });
 
     // Store client state
@@ -151,7 +174,8 @@ async function initializeAuthClient(clientId) {
         qrImage: null,
         status: 'initializing',
         sessionId: null,
-        phoneNumber: null
+        phoneNumber: null,
+        createdAt: Date.now()
     };
 
     activeClients.set(clientId, clientState);
@@ -164,7 +188,7 @@ async function initializeAuthClient(clientId) {
         
         try {
             clientState.qrImage = await qrcode.toDataURL(qr);
-            console.log('✅ QR code generated successfully');
+            console.log(`✅ QR code generated and stored for: ${clientId}`);
         } catch (err) {
             console.error('❌ QR code generation failed:', err);
         }
@@ -176,7 +200,7 @@ async function initializeAuthClient(clientId) {
         clientState.status = 'authenticated';
     });
 
-    // Client Ready - Save Session and Send ID to User
+    // Client Ready
     client.on('ready', async () => {
         console.log(`✅ CLIENT READY for: ${clientId}`);
         clientState.status = 'ready';
@@ -187,7 +211,6 @@ async function initializeAuthClient(clientId) {
             const deviceName = info.pushname || 'Unknown Device';
             const platform = info.platform || 'web';
 
-            // Generate unique session ID
             const sessionId = `session_${phoneNumber}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
             
             clientState.sessionId = sessionId;
@@ -196,7 +219,6 @@ async function initializeAuthClient(clientId) {
             console.log(`📞 Phone: ${phoneNumber}`);
             console.log(`🔑 Session ID: ${sessionId}`);
 
-            // Serialize session data
             const sessionData = {
                 phoneNumber: phoneNumber,
                 deviceName: deviceName,
@@ -207,11 +229,9 @@ async function initializeAuthClient(clientId) {
                 remoteAuthPath: clientId
             };
 
-            // Encrypt session data
             const serialized = JSON.stringify(sessionData);
             const encrypted = encryptData(serialized);
 
-            // Save to MongoDB
             await Session.create({
                 sessionId: sessionId,
                 phoneNumber: phoneNumber,
@@ -237,16 +257,19 @@ async function initializeAuthClient(clientId) {
 
             console.log('💾 Session saved to MongoDB');
 
-            // SEND SESSION ID TO USER'S WHATSAPP
             await sendSessionIdToUser(client, phoneNumber, sessionId, deviceName);
 
             clientState.status = 'session_saved';
 
-            // Cleanup after 30 seconds
+            // Cleanup after success
             setTimeout(async () => {
-                console.log(`🧹 Cleaning up client: ${clientId}`);
-                await client.destroy();
-                activeClients.delete(clientId);
+                console.log(`🧹 Cleaning up successful client: ${clientId}`);
+                try {
+                    await client.destroy();
+                    activeClients.delete(clientId);
+                } catch (err) {
+                    console.error('Cleanup error:', err);
+                }
             }, 30000);
 
         } catch (error) {
@@ -264,6 +287,17 @@ async function initializeAuthClient(clientId) {
     client.on('auth_failure', async (msg) => {
         console.error(`❌ Authentication Failed [${clientId}]:`, msg);
         clientState.status = 'auth_failed';
+        
+        // Cleanup on failure
+        setTimeout(async () => {
+            try {
+                await client.destroy();
+                activeClients.delete(clientId);
+                await cleanupOldRemoteAuthData(clientId);
+            } catch (err) {
+                console.error('Cleanup error:', err);
+            }
+        }, 5000);
     });
 
     // Disconnected
@@ -278,13 +312,20 @@ async function initializeAuthClient(clientId) {
     });
 
     // Initialize client
-    await client.initialize();
+    try {
+        await client.initialize();
+    } catch (error) {
+        console.error(`❌ Failed to initialize client ${clientId}:`, error);
+        clientState.status = 'error';
+        activeClients.delete(clientId);
+        throw error;
+    }
     
     return clientId;
 }
 
 // ============================================
-// SEND SESSION ID TO USER VIA WHATSAPP
+// SEND SESSION ID TO USER
 // ============================================
 async function sendSessionIdToUser(client, phoneNumber, sessionId, deviceName) {
     try {
@@ -322,15 +363,39 @@ async function sendSessionIdToUser(client, phoneNumber, sessionId, deviceName) {
 Happy botting! 🤖✨`;
 
         await client.sendMessage(chatId, message);
-        
         console.log(`✅ Session ID sent to user: ${phoneNumber}`);
-        console.log(`📧 Message delivered successfully`);
 
     } catch (error) {
         console.error('❌ Failed to send session ID to user:', error);
-        console.log('💡 User will need to get session ID from API or logs');
     }
 }
+
+// ============================================
+// CLEANUP STALE CLIENTS
+// ============================================
+function cleanupStaleClients() {
+    const now = Date.now();
+    const STALE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
+    for (const [clientId, clientState] of activeClients.entries()) {
+        const age = now - clientState.createdAt;
+        
+        if (age > STALE_TIMEOUT && clientState.status !== 'session_saved') {
+            console.log(`🧹 Removing stale client: ${clientId} (age: ${Math.floor(age/1000)}s)`);
+            
+            try {
+                clientState.client.destroy();
+            } catch (err) {
+                console.error(`Error destroying stale client:`, err);
+            }
+            
+            activeClients.delete(clientId);
+        }
+    }
+}
+
+// Run cleanup every 2 minutes
+setInterval(cleanupStaleClients, 2 * 60 * 1000);
 
 // ============================================
 // API ROUTES
@@ -342,28 +407,38 @@ app.get('/api/health', (req, res) => {
         service: 'scanner',
         status: 'ok',
         activeClients: activeClients.size,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
     });
 });
 
 // Start New Authentication Session
 app.post('/api/auth/start', async (req, res) => {
-    // Destroy any existing clients to prevent Puppeteer crashes
-    for (const [clientId, clientState] of activeClients.entries()) {
-        console.log(`🧹 Destroying previous client: ${clientId}`);
-        try {
-            await clientState.client.destroy();
-        } catch (err) {
-            console.error(`Error destroying client ${clientId}:`, err);
-        }
-        activeClients.delete(clientId);
+    if (isShuttingDown) {
+        return res.status(503).json({
+            success: false,
+            message: 'Server is shutting down, please try again in a moment'
+        });
+    }
+
+    // Limit concurrent authentications to prevent resource exhaustion
+    if (activeClients.size >= 3) {
+        return res.status(429).json({
+            success: false,
+            message: 'Too many active authentications. Please try again in a few minutes.'
+        });
     }
 
     try {
-        // Generate unique client ID for this auth session
         const clientId = `auth_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
         
-        await initializeAuthClient(clientId);
+        console.log(`🆕 New auth request - Creating client: ${clientId}`);
+        
+        // Start initialization in background
+        initializeAuthClient(clientId).catch(err => {
+            console.error(`Failed to initialize ${clientId}:`, err);
+            activeClients.delete(clientId);
+        });
         
         res.json({
             success: true,
@@ -383,9 +458,15 @@ app.post('/api/auth/start', async (req, res) => {
 // Reset Authentication
 app.post('/api/auth/reset', async (req, res) => {
     try {
-        // Destroy all active clients
+        console.log(`🔄 Reset requested - cleaning up ${activeClients.size} clients`);
+        
         for (const [clientId, clientState] of activeClients.entries()) {
-            await clientState.client.destroy();
+            try {
+                await clientState.client.destroy();
+                await cleanupOldRemoteAuthData(clientId);
+            } catch (err) {
+                console.error(`Error cleaning up ${clientId}:`, err);
+            }
             activeClients.delete(clientId);
         }
         
@@ -402,7 +483,7 @@ app.post('/api/auth/reset', async (req, res) => {
     }
 });
 
-// Get QR Code for Client
+// Get QR Code
 app.get('/api/qr/:clientId', (req, res) => {
     const { clientId } = req.params;
     const clientState = activeClients.get(clientId);
@@ -410,7 +491,7 @@ app.get('/api/qr/:clientId', (req, res) => {
     if (!clientState) {
         return res.json({
             success: false,
-            message: 'Client session not found or expired',
+            message: 'Session not found or expired',
             status: 'not_found'
         });
     }
@@ -431,7 +512,7 @@ app.get('/api/qr/:clientId', (req, res) => {
     }
 });
 
-// Get Status for Client
+// Get Status
 app.get('/api/status/:clientId', (req, res) => {
     const { clientId } = req.params;
     const clientState = activeClients.get(clientId);
@@ -452,7 +533,7 @@ app.get('/api/status/:clientId', (req, res) => {
     });
 });
 
-// Get All Sessions from DB
+// Get All Sessions
 app.get('/api/sessions', async (req, res) => {
     try {
         const sessions = await Session.find({})
@@ -473,7 +554,7 @@ app.get('/api/sessions', async (req, res) => {
     }
 });
 
-// Get Specific Session Info by Session ID
+// Get Specific Session
 app.get('/api/sessions/:sessionId', async (req, res) => {
     try {
         const session = await Session.findOne({ sessionId: req.params.sessionId })
@@ -498,7 +579,7 @@ app.get('/api/sessions/:sessionId', async (req, res) => {
     }
 });
 
-// Verify Session Exists (for backend to check before starting)
+// Verify Session
 app.post('/api/sessions/verify', async (req, res) => {
     try {
         const { sessionId } = req.body;
@@ -540,9 +621,7 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
+// Helper Functions
 function getStatusMessage(status) {
     const messages = {
         'initializing': 'Initializing WhatsApp client...',
@@ -565,38 +644,27 @@ const PORT = process.env.PORT || 4000;
 
 async function startServer() {
     try {
-        // Validate required environment variables
         if (!process.env.MONGODB_URI) {
             throw new Error('MONGODB_URI environment variable is required');
         }
 
-        // Connect to MongoDB
         await mongoose.connect(process.env.MONGODB_URI);
         console.log('✅ MongoDB Connected');
 
-        // Initialize MongoStore for RemoteAuth
         mongoStore = new MongoStore({ mongoose });
         console.log('✅ MongoDB Store initialized for RemoteAuth');
 
-        // Start Express Server
         app.listen(PORT, '0.0.0.0', () => {
             console.log('\n' + '='.repeat(60));
             console.log('🎉 SERVICE 1: MULTI-TENANT SCANNER STARTED');
             console.log('='.repeat(60));
             console.log(`📱 Server running on port: ${PORT}`);
-            console.log(`🔌 API: http://localhost:${PORT}/api`);
-            console.log('='.repeat(60));
-            console.log('\n📋 Multi-Tenant Features:');
-            console.log('   ✓ Multiple users can authenticate simultaneously');
-            console.log('   ✓ Each user gets unique Session ID');
-            console.log('   ✓ Session ID sent to user\'s WhatsApp inbox');
-            console.log('   ✓ Users deploy their own backend with Session ID');
-            console.log('   ✓ All sessions stored in MongoDB\n');
+            console.log(`🔌 Health: /api/health`);
+            console.log('='.repeat(60) + '\n');
         });
 
     } catch (error) {
         console.error('❌ Failed to start server:', error);
-        console.log('💡 Check your MONGODB_URI in environment variables');
         process.exit(1);
     }
 }
@@ -606,35 +674,40 @@ startServer();
 // ============================================
 // GRACEFUL SHUTDOWN
 // ============================================
-process.on('SIGINT', async () => {
-    console.log('\n🛑 Shutting down Scanner Service...');
+async function gracefulShutdown(signal) {
+    console.log(`\n🛑 ${signal} received, shutting down gracefully...`);
+    isShuttingDown = true;
+    
+    // Stop accepting new requests
+    console.log('⏸️  Stopping new authentications...');
     
     // Destroy all active clients
+    const cleanupPromises = [];
     for (const [clientId, clientState] of activeClients.entries()) {
-        try {
-            await clientState.client.destroy();
-            console.log(`✅ Cleaned up client: ${clientId}`);
-        } catch (error) {
-            console.error(`Failed to cleanup ${clientId}:`, error);
-        }
+        console.log(`🧹 Cleaning up client: ${clientId}`);
+        cleanupPromises.push(
+            clientState.client.destroy().catch(err => 
+                console.error(`Error destroying ${clientId}:`, err)
+            )
+        );
     }
+    
+    await Promise.all(cleanupPromises);
+    activeClients.clear();
     
     await mongoose.connection.close();
     console.log('✅ Shutdown complete');
     process.exit(0);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
 });
 
-process.on('SIGTERM', async () => {
-    console.log('\n🛑 SIGTERM received, shutting down gracefully...');
-    
-    for (const [clientId, clientState] of activeClients.entries()) {
-        try {
-            await clientState.client.destroy();
-        } catch (error) {
-            console.error(`Failed to cleanup ${clientId}:`, error);
-        }
-    }
-    
-    await mongoose.connection.close();
-    process.exit(0);
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
